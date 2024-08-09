@@ -180,6 +180,13 @@ void ArrowIpcSharedBufferReset(struct ArrowIpcSharedBuffer* shared);
 /// the resulting arrays must not be passed to other threads to be released.
 int ArrowIpcSharedBufferIsThreadSafe(void);
 
+/// \brief A range of bytes within an IPC file
+struct ArrowIpcFileBlock {
+  int64_t offset;
+  int64_t metadata_length;
+  int64_t body_length;
+};
+
 /// \brief Decoder for Arrow IPC messages
 ///
 /// This structure is intended to be allocated by the caller,
@@ -213,6 +220,12 @@ struct ArrowIpcDecoder {
 
   /// \brief The number of bytes in the forthcoming body message.
   int64_t body_size_bytes;
+
+  /// \brief Blocks of bytes referenced by an IPC file Footer which contain RecordBatches
+  struct ArrowIpcFileBlock* record_batch_blocks;
+
+  /// \brief The number of RecordBatches in an IPC file Footer
+  int64_t record_batch_count;
 
   /// \brief Private resources managed by this library
   void* private_data;
@@ -319,6 +332,13 @@ ArrowErrorCode ArrowIpcDecoderDecodeArrayView(struct ArrowIpcDecoder* decoder,
                                               struct ArrowBufferView body, int64_t i,
                                               struct ArrowArrayView** out,
                                               struct ArrowError* error);
+
+/// \brief Decode the Footer at the end of an arrow file.
+///
+/// Returns ESPIPE if the buffer is not large enough to read the full Footer.
+ArrowErrorCode ArrowIpcDecoderDecodeFooter(struct ArrowIpcDecoder* decoder,
+                                           struct ArrowBufferView buffer,
+                                           struct ArrowError* error);
 
 /// \brief Decode an ArrowArray
 ///

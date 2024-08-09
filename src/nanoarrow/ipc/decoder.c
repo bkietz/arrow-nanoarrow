@@ -257,8 +257,13 @@ void ArrowIpcDecoderReset(struct ArrowIpcDecoder* decoder) {
     }
 
     ArrowFree(private_data);
-    memset(decoder, 0, sizeof(struct ArrowIpcDecoder));
   }
+
+  if (decoder->record_batch_blocks != NULL) {
+    ArrowFree(decoder->record_batch_blocks);
+  }
+
+  memset(decoder, 0, sizeof(struct ArrowIpcDecoder));
 }
 
 static inline uint32_t ArrowIpcReadContinuationBytes(struct ArrowBufferView* data) {
@@ -1754,5 +1759,64 @@ ArrowErrorCode ArrowIpcDecoderDecodeArrayFromShared(
   }
 
   ArrowArrayMove(&temp, out);
+  return NANOARROW_OK;
+}
+
+ArrowErrorCode ArrowIpcDecoderDecodeFooter(struct ArrowIpcDecoder* decoder,
+                                           struct ArrowBufferView buffer,
+                                           struct ArrowError* error) {
+  char magic[6] = "ARROW1";
+  int32_t footer_size;
+
+  if (buffer.size_bytes < (int)(sizeof(footer_size) + sizeof(magic))) {
+    ArrowErrorSet(error,
+                  "Expected data of at least 10 bytes but only %" PRId64 " were provided",
+                  buffer.size_bytes);
+    return ESPIPE;
+  }
+
+  const uint8_t* rbuf = buffer.data.as_uint8 + buffer.size_bytes;
+  if (memcmp(rbuf -= sizeof(magic), magic, sizeof(magic)) != 0) {
+    ArrowErrorSet(error, "Expected IPC file to end with magic ARROW1");
+    return EINVAL;
+  }
+
+  memcpy(&footer_size, rbuf -= sizeof(footer_size), sizeof(footer_size));
+  if (footer_size > rbuf - buffer.data.as_uint8) {
+    ArrowErrorSet(error, "The Footer's size is %d bytes but only %d remain",
+                  (int)footer_size, (int)(rbuf - buffer.data.as_uint8));
+    return ESPIPE;
+  }
+
+  ns(Footer_table_t) footer = ns(Footer_as_root(rbuf -= footer_size));
+  if (!footer) {
+    ArrowErrorSet(error, "Failed to get Footer as root");
+    return EINVAL;
+  }
+
+  ns(Block_vec_t) block_vec = ns(Footer_recordBatches(footer));
+  if (!block_vec) {
+    ArrowErrorSet(error, "Failed to get Footer's record batch vector");
+    return EINVAL;
+  }
+
+  if (decoder->record_batch_blocks != NULL) {
+    ArrowFree(decoder->record_batch_blocks);
+    decoder->record_batch_blocks = NULL;
+  }
+
+  decoder->metadata_version = ns(Footer_version(footer));
+  decoder->record_batch_count = ns(Block_vec_len(block_vec));
+
+  if (decoder->record_batch_count != 0) {
+    decoder->record_batch_blocks =
+        ArrowMalloc(sizeof(struct ArrowIpcFileBlock) * decoder->record_batch_count);
+    for (int64_t i = 0; i < decoder->record_batch_count; i++) {
+      ns(Block_struct_t) block = ns(Block_vec_at(block_vec, i));
+      decoder->record_batch_blocks[i].offset = block->offset;
+      decoder->record_batch_blocks[i].metadata_length = block->metaDataLength;
+      decoder->record_batch_blocks[i].body_length = block->bodyLength;
+    }
+  }
   return NANOARROW_OK;
 }
